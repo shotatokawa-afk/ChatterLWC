@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <customSettingsType>Hierarchy</customSettingsType>
+    <description>OpenAI API キー（AI 一次回答で使用）。設定は「設定 > カスタム設定 > OpenAI Config > 管理」で行います。</description>
+    <label>OpenAI Config</label>
+    <visibility>Protected</visibility>
+</CustomObject>

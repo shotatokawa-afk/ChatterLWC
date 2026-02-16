@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Reporter__c</fullName>
+    <label>起票者</label>
+    <description>問い合わせを起票した担当者</description>
+    <type>Text</type>
+    <length>255</length>
+    <required>false</required>
+</CustomField>
