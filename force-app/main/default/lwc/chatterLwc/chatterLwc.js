@@ -2,6 +2,7 @@ import { LightningElement, api, wire, track } from 'lwc';
 import { NavigationMixin } from 'lightning/navigation';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import { notifyRecordUpdateAvailable } from 'lightning/uiRecordApi';
+import Id from '@salesforce/user/Id'; // 追加: ユーザーID取得用
 import postFeedItem from '@salesforce/apex/CustomChatterController.postFeedItem';
 import uploadFileForPost from '@salesforce/apex/CustomChatterController.uploadFileForPost';
 import getEmailSenderOptions from '@salesforce/apex/CustomChatterController.getEmailSenderOptions';
@@ -17,10 +18,10 @@ import searchRecipients from '@salesforce/apex/CustomChatterController.searchRec
 const VISIBILITY_ALL_USERS = 'AllUsers';
 const VISIBILITY_INTERNAL = 'InternalUsers';
 const ACCEPTED_FILE_EXTENSIONS = '.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv';
-const MAX_IMAGE_SIZE = 1280;
 
 export default class ChatterLwc extends NavigationMixin(LightningElement) {
     @api recordId;
+    currentUserId = Id; // 追加: 現在のユーザーID
     @track body = '';
     @track visibility = VISIBILITY_ALL_USERS;
     @track postAttachments = [];
@@ -58,12 +59,52 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         { label: '株式会社パトスロゴスのみ', value: VISIBILITY_INTERNAL }
     ];
 
+    // 'image'を含めることでQuillのCtrl+V画像ペーストを有効化。ツールバーの標準ボタンはURL入力のみ
     get formats() {
         return [
             'font', 'size', 'bold', 'italic', 'underline', 'strike',
             'list', 'indent', 'align', 'link', 'image',
             'clean', 'table', 'header', 'color', 'background'
         ];
+    }
+
+    // 追加: 保存用キー生成（レコードIDとユーザーIDでユニークにする）
+    get storageKey() {
+        return `draft_${this.recordId}_${this.currentUserId}`;
+    }
+
+    // 追加: 初期化時に下書きを復元
+    connectedCallback() {
+        this.restoreDraft();
+    }
+
+    restoreDraft() {
+        const draft = localStorage.getItem(this.storageKey);
+        if (draft) {
+            try {
+                const parsed = JSON.parse(draft);
+                // 投稿本文の復元
+                if (parsed.post) {
+                    this.body = parsed.post;
+                }
+                // メール本文の復元
+                if (parsed.email) {
+                    this.emailBody = parsed.email;
+                }
+            } catch (e) {
+                console.error('Failed to parse draft', e);
+            }
+        }
+    }
+
+    // 追加: 下書き保存処理
+    saveDraft() {
+        const data = {
+            post: this.body,
+            email: this.emailBody,
+            timestamp: Date.now()
+        };
+        localStorage.setItem(this.storageKey, JSON.stringify(data));
     }
 
     @wire(getEmailSenderOptions) wiredSenderOptions({ data }) {
@@ -75,7 +116,19 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         }
     }
     @wire(getQuickTextList) wiredQuickText({ data }) { if (data) this.quickTextOptions = data; }
-    @wire(getUserEmailSignature) wiredSignature({ data }) { if (data) { this.userEmailSignature = data; if (!this.emailBody) this.emailBody = (data || '').replace(/<br\s*\/?>/gi, '</p><p>'); } }
+    
+    @wire(getUserEmailSignature) wiredSignature({ data }) { 
+        if (data) { 
+            this.userEmailSignature = data; 
+            // メール本文が空の場合のみ署名をセット（ドラフト復元済みの場合は上書きしない）
+            if (!this.emailBody) {
+                this.emailBody = (data || '').replace(/<br\s*\/?>/gi, '</p><p>'); 
+                // 署名をセットした状態も保存しておく
+                this.saveDraft();
+            }
+        } 
+    }
+    
     @wire(getEmailTemplates, { recordId: '$recordId' }) wiredEmailTemplates({ data }) { if (data) this.templateOptions = data; }
     @wire(getOriginalEmailMessage, { recordId: '$recordId' }) wiredOriginalMessage({ data }) { if (data && data.hasContent) { this.originalMessage = data; if (!this.emailSubject) this.emailSubject = 'RE: ' + (data.subject || ''); } }
     @wire(getEmailInitialValues, { recordId: '$recordId' }) wiredInitialValues({ data, error }) {
@@ -143,7 +196,12 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     handleToggleBcc() { this.showBcc = !this.showBcc; }
     handleEmailFromChange(e) { this.emailFrom = e.detail.value; }
     handleEmailSubjectChange(e) { this.emailSubject = e.target.value; }
-    handleEmailBodyChange(e) { this.emailBody = e.target.value; }
+    
+    // 修正: 入力時に下書き保存を実行
+    handleEmailBodyChange(e) { 
+        this.emailBody = e.target.value; 
+        this.saveDraft();
+    }
 
     async handleSendEmail() {
         if (this.isEmailSendDisabled) return;
@@ -156,6 +214,9 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             });
             this._showToast('成功', 'メールを送信しました', 'success');
             this.toRecipients = []; this.ccRecipients = []; this.bccRecipients = []; this.emailSubject = ''; this.emailBody = ''; this.emailAttachments = [];
+            
+            // 追加: 送信成功後は下書きをクリア（空の状態で保存）
+            this.saveDraft();
         } catch (error) { this._showToast('送信エラー', error.message, 'error'); }
         finally { this.isLoading = false; }
     }
@@ -165,9 +226,7 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     async handleImageFileSelected(event) {
         const file = event.target?.files?.[0];
         if (!file) return;
-        this.isLoading = true;
         await this._insertImageFromFile(file);
-        this.isLoading = false;
         event.target.value = '';
     }
 
@@ -182,6 +241,7 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
                 this.body = (this.body || '') + imgTag;
                 editor.value = this.body;
                 this._updateRichTextHeight(this.body, '.post-rich-text-wrapper');
+                this.saveDraft(); // 画像挿入時も保存
             }
         } catch (error) { this._showToast('画像挿入エラー', error.message, 'error'); }
     }
@@ -189,10 +249,6 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     async handleShare() {
         this.isLoading = true;
         try {
-            if (this.body && this.body.includes('data:image')) {
-                this._showToast('処理中', '画像を処理しています...', 'info');
-            }
-
             let processedBody = this.body || '';
             const inlineDocIds = [];
             for (const [url, info] of Object.entries(this.uploadedImageMap)) {
@@ -201,99 +257,38 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
                     processedBody = processedBody.split(url).join(`sfdc://${info.versionId}`);
                 }
             }
-
             const { html: processedHtml, docIds: pastedDocIds } = await this._processBase64ImagesRegex(processedBody);
             processedBody = processedHtml;
-        
             const allDocIds = [...new Set([...inlineDocIds, ...pastedDocIds, ...this.postAttachments.map(a => a.documentId)])];
             await postFeedItem({ parentId: this.recordId, body: processedBody, visibility: this.visibility, contentDocumentIds: allDocIds });
-            
             if (this.recordId) await notifyRecordUpdateAvailable([{ recordId: this.recordId }]);
             this._showToast('成功', '投稿しました', 'success');
+            
+            // 投稿成功時にクリア＆下書き削除
             this._clearFields();
+            this.saveDraft();
         } catch (error) { this._showToast('投稿エラー', error.message, 'error'); }
         finally { this.isLoading = false; }
     }
 
-    /**
-     * data:image (Base64) 形式の画像のみを検出し、Salesforceにアップロードして sfdc:// 形式に置換する。
-     * servlet/rtaImage 等の内部URLはそのままApexへ渡し、Apex側で解決する。
-     */
     async _processBase64ImagesRegex(html) {
         const docIds = [];
         if (!html || !html.includes('data:image')) return { html: html || '', docIds };
-
-        const base64Regex = /src=(?:["']|&quot;)(data:image\/(?:png|jpeg|jpg|gif|webp);base64,([^"'&]+))(?:["']|&quot;)/g;
-        const uploadTargets = [];
-        let match;
-
-        while ((match = base64Regex.exec(html)) !== null) {
-            uploadTargets.push({
-                originalValue: match[1],
-                base64Data: match[2],
-                ext: (match[1].match(/data:image\/(\w+);/)?.[1] || 'png').replace('jpeg', 'jpg')
-            });
+        const regex = /src=["'](data:image\/(?:png|jpeg|jpg|gif|webp);base64,([^"']+))["']/g;
+        let match; let newHtml = html;
+        while ((match = regex.exec(html)) !== null) {
+            const b64Data = match[2];
+            const ext = (match[1].match(/data:image\/(\w+);/)?.[1] || 'png').replace('jpeg', 'jpg');
+            try {
+                const res = await uploadFileForPost({ base64Data: b64Data, fileName: `pasted_${Date.now()}.${ext}`, recordId: this.recordId, visibility: this.visibility });
+                newHtml = newHtml.split(match[1]).join(`sfdc://${res.versionId}`);
+                docIds.push(res.documentId);
+            } catch (e) { console.error('Base64 upload error', e); }
         }
-
-        if (uploadTargets.length === 0) return { html, docIds };
-
-        const results = await Promise.all(uploadTargets.map(target =>
-            uploadFileForPost({
-                base64Data: target.base64Data,
-                fileName: `pasted_${Date.now()}_${Math.floor(Math.random() * 1000)}.${target.ext}`,
-                recordId: this.recordId,
-                visibility: this.visibility
-            }).then(res => ({
-                originalValue: target.originalValue,
-                versionId: res.versionId,
-                documentId: res.documentId
-            }))
-        ));
-
-        let newHtml = html;
-        for (const res of results) {
-            newHtml = newHtml.split(res.originalValue).join(`sfdc://${res.versionId}`);
-            docIds.push(res.documentId);
-        }
-
         return { html: newHtml, docIds };
     }
 
-    _fileToBase64(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const img = new Image();
-                img.onload = () => {
-                    let width = img.width;
-                    let height = img.height;
-                    if (width > height) {
-                        if (width > MAX_IMAGE_SIZE) {
-                            height *= MAX_IMAGE_SIZE / width;
-                            width = MAX_IMAGE_SIZE;
-                        }
-                    } else {
-                        if (height > MAX_IMAGE_SIZE) {
-                            width *= MAX_IMAGE_SIZE / height;
-                            height = MAX_IMAGE_SIZE;
-                        }
-                    }
-                    const canvas = document.createElement('canvas');
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0, width, height);
-                    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-                    resolve(dataUrl.split(',')[1]);
-                };
-                img.onerror = reject;
-                img.src = event.target.result;
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-        });
-    }
-
+    _fileToBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
     _decodeHtml(html) { const txt = document.createElement("textarea"); txt.innerHTML = html; return txt.value; }
     _showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }
     _clearFields() {
@@ -307,45 +302,54 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     }
     _updateRichTextHeight(html, selector) { const w = this.template.querySelector(selector); if (w) { const lines = Math.max(5, (html || '').split('<p>').length); w.style.setProperty('--slds-c-textarea-sizing-min-height', (lines * 24) + 'px'); } }
 
-    handleBodyChange(e) { this.body = e.target.value; this._updateRichTextHeight(this.body, '.post-rich-text-wrapper'); }
+    // 修正: 入力時に下書き保存を実行
+    handleBodyChange(e) { 
+        this.body = e.target.value; 
+        this._updateRichTextHeight(this.body, '.post-rich-text-wrapper'); 
+        this.saveDraft();
+    }
+    
     handleVisibilityChange(e) { this.visibility = e.detail.value; }
     handlePostAttachClick() { this.template.querySelector('input.post-file-input-hidden').click(); }
     async handlePostFileSelected(e) {
-        this.isLoading = true;
-        try {
-            for (let file of e.target.files) {
-                const b64 = (file.type.startsWith('image/')) ? await this._fileToBase64(file) : await this._fileToBase64Standard(file);
-                const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: this.visibility });
-                this.postAttachments = [...this.postAttachments, { documentId: res.documentId, name: file.name }];
-            }
-        } finally {
-            this.isLoading = false;
-            e.target.value = '';
+        for (let file of e.target.files) {
+            const b64 = await this._fileToBase64(file);
+            const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: this.visibility });
+            this.postAttachments = [...this.postAttachments, { documentId: res.documentId, name: file.name }];
+        }
+        e.target.value = '';
+    }
+    handleRemovePostAttachment(e) { this.postAttachments = this.postAttachments.filter(a => a.documentId !== e.currentTarget.dataset.documentId); }
+    handleQuickTextSelect(e) { 
+        const o = this.quickTextOptions.find(opt => opt.value === e.detail.value); 
+        if (o) {
+            this.emailBody = (this.emailBody || '') + o.message; 
+            this.saveDraft(); // クイックテキスト挿入時も保存
         }
     }
-    _fileToBase64Standard(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
-    handleRemovePostAttachment(e) { this.postAttachments = this.postAttachments.filter(a => a.documentId !== e.currentTarget.dataset.documentId); }
-    handleQuickTextSelect(e) { const o = this.quickTextOptions.find(opt => opt.value === e.detail.value); if (o) this.emailBody = (this.emailBody || '') + o.message; }
     handlePostTemplateSelect(e) { this._applyTemplate(e.detail.value, true); }
-    handleEmailTemplateSelect(e) { this._applyTemplate(e.detail.value, false); }
+    handleTemplateSelect(e) { this._applyTemplate(e.detail.value, false); }
     async _applyTemplate(id, isPost) {
         try {
             const res = await renderEmailTemplate({ templateId: id, whoId: this.contactIdForTemplate, whatId: this.recordId });
-            if (isPost) { this.body = res.htmlBody; this.template.querySelector('lightning-input-rich-text[data-id="post-editor"]').value = res.htmlBody; }
-            else { this.emailBody = res.htmlBody + (this.userEmailSignature ? `<br><br>${this.userEmailSignature}` : ''); }
+            if (isPost) { 
+                this.body = res.htmlBody; 
+                this.template.querySelector('lightning-input-rich-text[data-id="post-editor"]').value = res.htmlBody; 
+            }
+            else { 
+                this.emailBody = res.htmlBody + (this.userEmailSignature ? `<br><br>${this.userEmailSignature}` : ''); 
+            }
+            this.saveDraft(); // テンプレート適用時も保存
         } catch (e) { console.error(e); }
     }
 
     handleEmailAttachClick() { this.template.querySelector('input.email-file-input-hidden').click(); }
     async handleEmailFileSelected(e) {
-        this.isLoading = true;
-        try {
-            for (let file of e.target.files) {
-                const b64 = (file.type.startsWith('image/')) ? await this._fileToBase64(file) : await this._fileToBase64Standard(file);
-                const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: 'AllUsers' });
-                this.emailAttachments = [...this.emailAttachments, { documentId: res.documentId, name: file.name }];
-            }
-        } finally { this.isLoading = false; }
+        for (let file of e.target.files) {
+            const b64 = await this._fileToBase64(file);
+            const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: 'AllUsers' });
+            this.emailAttachments = [...this.emailAttachments, { documentId: res.documentId, name: file.name }];
+        }
     }
     handleRemoveEmailAttachment(e) { this.emailAttachments = this.emailAttachments.filter(a => a.documentId !== e.currentTarget.dataset.documentId); }
 }
