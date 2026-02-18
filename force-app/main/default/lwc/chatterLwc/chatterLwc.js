@@ -17,6 +17,7 @@ import searchRecipients from '@salesforce/apex/CustomChatterController.searchRec
 const VISIBILITY_ALL_USERS = 'AllUsers';
 const VISIBILITY_INTERNAL = 'InternalUsers';
 const ACCEPTED_FILE_EXTENSIONS = '.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv';
+const MAX_IMAGE_SIZE = 1280;
 
 export default class ChatterLwc extends NavigationMixin(LightningElement) {
     @api recordId;
@@ -57,7 +58,6 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         { label: '株式会社パトスロゴスのみ', value: VISIBILITY_INTERNAL }
     ];
 
-    // 'image'を含めることでQuillのCtrl+V画像ペーストを有効化。ツールバーの標準ボタンはURL入力のみ
     get formats() {
         return [
             'font', 'size', 'bold', 'italic', 'underline', 'strike',
@@ -165,7 +165,9 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     async handleImageFileSelected(event) {
         const file = event.target?.files?.[0];
         if (!file) return;
+        this.isLoading = true;
         await this._insertImageFromFile(file);
+        this.isLoading = false;
         event.target.value = '';
     }
 
@@ -187,6 +189,10 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     async handleShare() {
         this.isLoading = true;
         try {
+            if (this.body && this.body.includes('data:image')) {
+                this._showToast('処理中', '画像を処理しています...', 'info');
+            }
+
             let processedBody = this.body || '';
             const inlineDocIds = [];
             for (const [url, info] of Object.entries(this.uploadedImageMap)) {
@@ -195,10 +201,13 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
                     processedBody = processedBody.split(url).join(`sfdc://${info.versionId}`);
                 }
             }
+
             const { html: processedHtml, docIds: pastedDocIds } = await this._processBase64ImagesRegex(processedBody);
             processedBody = processedHtml;
+        
             const allDocIds = [...new Set([...inlineDocIds, ...pastedDocIds, ...this.postAttachments.map(a => a.documentId)])];
             await postFeedItem({ parentId: this.recordId, body: processedBody, visibility: this.visibility, contentDocumentIds: allDocIds });
+            
             if (this.recordId) await notifyRecordUpdateAvailable([{ recordId: this.recordId }]);
             this._showToast('成功', '投稿しました', 'success');
             this._clearFields();
@@ -206,24 +215,85 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         finally { this.isLoading = false; }
     }
 
+    /**
+     * data:image (Base64) 形式の画像のみを検出し、Salesforceにアップロードして sfdc:// 形式に置換する。
+     * servlet/rtaImage 等の内部URLはそのままApexへ渡し、Apex側で解決する。
+     */
     async _processBase64ImagesRegex(html) {
         const docIds = [];
         if (!html || !html.includes('data:image')) return { html: html || '', docIds };
-        const regex = /src=["'](data:image\/(?:png|jpeg|jpg|gif|webp);base64,([^"']+))["']/g;
-        let match; let newHtml = html;
-        while ((match = regex.exec(html)) !== null) {
-            const b64Data = match[2];
-            const ext = (match[1].match(/data:image\/(\w+);/)?.[1] || 'png').replace('jpeg', 'jpg');
-            try {
-                const res = await uploadFileForPost({ base64Data: b64Data, fileName: `pasted_${Date.now()}.${ext}`, recordId: this.recordId, visibility: this.visibility });
-                newHtml = newHtml.split(match[1]).join(`sfdc://${res.versionId}`);
-                docIds.push(res.documentId);
-            } catch (e) { console.error('Base64 upload error', e); }
+
+        const base64Regex = /src=(?:["']|&quot;)(data:image\/(?:png|jpeg|jpg|gif|webp);base64,([^"'&]+))(?:["']|&quot;)/g;
+        const uploadTargets = [];
+        let match;
+
+        while ((match = base64Regex.exec(html)) !== null) {
+            uploadTargets.push({
+                originalValue: match[1],
+                base64Data: match[2],
+                ext: (match[1].match(/data:image\/(\w+);/)?.[1] || 'png').replace('jpeg', 'jpg')
+            });
         }
+
+        if (uploadTargets.length === 0) return { html, docIds };
+
+        const results = await Promise.all(uploadTargets.map(target =>
+            uploadFileForPost({
+                base64Data: target.base64Data,
+                fileName: `pasted_${Date.now()}_${Math.floor(Math.random() * 1000)}.${target.ext}`,
+                recordId: this.recordId,
+                visibility: this.visibility
+            }).then(res => ({
+                originalValue: target.originalValue,
+                versionId: res.versionId,
+                documentId: res.documentId
+            }))
+        ));
+
+        let newHtml = html;
+        for (const res of results) {
+            newHtml = newHtml.split(res.originalValue).join(`sfdc://${res.versionId}`);
+            docIds.push(res.documentId);
+        }
+
         return { html: newHtml, docIds };
     }
 
-    _fileToBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
+    _fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    let width = img.width;
+                    let height = img.height;
+                    if (width > height) {
+                        if (width > MAX_IMAGE_SIZE) {
+                            height *= MAX_IMAGE_SIZE / width;
+                            width = MAX_IMAGE_SIZE;
+                        }
+                    } else {
+                        if (height > MAX_IMAGE_SIZE) {
+                            width *= MAX_IMAGE_SIZE / height;
+                            height = MAX_IMAGE_SIZE;
+                        }
+                    }
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                    resolve(dataUrl.split(',')[1]);
+                };
+                img.onerror = reject;
+                img.src = event.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
     _decodeHtml(html) { const txt = document.createElement("textarea"); txt.innerHTML = html; return txt.value; }
     _showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }
     _clearFields() {
@@ -241,17 +311,23 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     handleVisibilityChange(e) { this.visibility = e.detail.value; }
     handlePostAttachClick() { this.template.querySelector('input.post-file-input-hidden').click(); }
     async handlePostFileSelected(e) {
-        for (let file of e.target.files) {
-            const b64 = await this._fileToBase64(file);
-            const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: this.visibility });
-            this.postAttachments = [...this.postAttachments, { documentId: res.documentId, name: file.name }];
+        this.isLoading = true;
+        try {
+            for (let file of e.target.files) {
+                const b64 = (file.type.startsWith('image/')) ? await this._fileToBase64(file) : await this._fileToBase64Standard(file);
+                const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: this.visibility });
+                this.postAttachments = [...this.postAttachments, { documentId: res.documentId, name: file.name }];
+            }
+        } finally {
+            this.isLoading = false;
+            e.target.value = '';
         }
-        e.target.value = '';
     }
+    _fileToBase64Standard(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
     handleRemovePostAttachment(e) { this.postAttachments = this.postAttachments.filter(a => a.documentId !== e.currentTarget.dataset.documentId); }
     handleQuickTextSelect(e) { const o = this.quickTextOptions.find(opt => opt.value === e.detail.value); if (o) this.emailBody = (this.emailBody || '') + o.message; }
     handlePostTemplateSelect(e) { this._applyTemplate(e.detail.value, true); }
-    handleTemplateSelect(e) { this._applyTemplate(e.detail.value, false); }
+    handleEmailTemplateSelect(e) { this._applyTemplate(e.detail.value, false); }
     async _applyTemplate(id, isPost) {
         try {
             const res = await renderEmailTemplate({ templateId: id, whoId: this.contactIdForTemplate, whatId: this.recordId });
@@ -262,11 +338,14 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
 
     handleEmailAttachClick() { this.template.querySelector('input.email-file-input-hidden').click(); }
     async handleEmailFileSelected(e) {
-        for (let file of e.target.files) {
-            const b64 = await this._fileToBase64(file);
-            const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: 'AllUsers' });
-            this.emailAttachments = [...this.emailAttachments, { documentId: res.documentId, name: file.name }];
-        }
+        this.isLoading = true;
+        try {
+            for (let file of e.target.files) {
+                const b64 = (file.type.startsWith('image/')) ? await this._fileToBase64(file) : await this._fileToBase64Standard(file);
+                const res = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: 'AllUsers' });
+                this.emailAttachments = [...this.emailAttachments, { documentId: res.documentId, name: file.name }];
+            }
+        } finally { this.isLoading = false; }
     }
     handleRemoveEmailAttachment(e) { this.emailAttachments = this.emailAttachments.filter(a => a.documentId !== e.currentTarget.dataset.documentId); }
 }
