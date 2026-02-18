@@ -306,8 +306,22 @@ public with sharing class CustomChatterController {
     @AuraEnabled
     public static EmailTemplateRenderResult renderEmailTemplate(Id templateId, Id whoId, Id whatId) {
         EmailTemplateRenderResult res = new EmailTemplateRenderResult();
+        // テンプレートをレンダリング
         Messaging.SingleEmailMessage msg = Messaging.renderStoredEmailTemplate(String.valueOf(templateId), whoId, whatId);
-        res.subject = msg.getSubject(); res.htmlBody = msg.getHtmlBody(); return res;
+        
+        res.subject = msg.getSubject();
+        
+        // 【修正】HTMLボディがあればそれを使用、なければテキストボディを使用
+        if (String.isNotBlank(msg.getHtmlBody())) {
+            res.htmlBody = msg.getHtmlBody();
+        } else if (String.isNotBlank(msg.getPlainTextBody())) {
+            // テキスト形式の場合は、改行コードを <br> タグに変換してリッチテキストで表示できるようにする
+            res.htmlBody = msg.getPlainTextBody().replace('\n', '<br>');
+        } else {
+            res.htmlBody = '';
+        }
+        
+        return res;
     }
 
     @AuraEnabled(cacheable=true)

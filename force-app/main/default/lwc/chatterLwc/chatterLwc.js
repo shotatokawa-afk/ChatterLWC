@@ -328,18 +328,27 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         }
     }
     handlePostTemplateSelect(e) { this._applyTemplate(e.detail.value, true); }
-    handleTemplateSelect(e) { this._applyTemplate(e.detail.value, false); }
+    
+    // 修正箇所: メソッド名を handleTemplateSelect から変更
+    handleEmailTemplateSelect(e) { this._applyTemplate(e.detail.value, false); }
+    
     async _applyTemplate(id, isPost) {
         try {
             const res = await renderEmailTemplate({ templateId: id, whoId: this.contactIdForTemplate, whatId: this.recordId });
+            
+            // 安全策: htmlBody が null/undefined の場合は空文字にする
+            const safeBody = res.htmlBody || ''; 
+
             if (isPost) { 
-                this.body = res.htmlBody; 
-                this.template.querySelector('lightning-input-rich-text[data-id="post-editor"]').value = res.htmlBody; 
+                this.body = safeBody; 
+                this.template.querySelector('lightning-input-rich-text[data-id="post-editor"]').value = safeBody; 
             }
             else { 
-                this.emailBody = res.htmlBody + (this.userEmailSignature ? `<br><br>${this.userEmailSignature}` : ''); 
+                // 署名がある場合は改行を入れて結合
+                const signaturePart = this.userEmailSignature ? `<br><br>${this.userEmailSignature}` : '';
+                this.emailBody = safeBody + signaturePart; 
             }
-            this.saveDraft(); // テンプレート適用時も保存
+            this.saveDraft();
         } catch (e) { console.error(e); }
     }
 
