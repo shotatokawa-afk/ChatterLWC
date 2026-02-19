@@ -1,6 +1,8 @@
 import { LightningElement, api, wire, track } from 'lwc';
 import { NavigationMixin } from 'lightning/navigation';
+import { loadStyle } from 'lightning/platformResourceLoader';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+import chatterRichTextOverrides from '@salesforce/resourceUrl/chatterRichTextOverrides';
 import { notifyRecordUpdateAvailable } from 'lightning/uiRecordApi';
 import Id from '@salesforce/user/Id'; // 追加: ユーザーID取得用
 import postFeedItem from '@salesforce/apex/CustomChatterController.postFeedItem';
@@ -98,6 +100,12 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             container.removeEventListener('paste', this._boundHandlePaste, true);
         }
         this._pasteListenerAdded = false;
+    }
+
+    renderedCallback() {
+        if (this._toolbarStylesLoaded) return;
+        this._toolbarStylesLoaded = true;
+        loadStyle(this, chatterRichTextOverrides).catch(() => {});
     }
 
     restoreDraft() {
@@ -340,7 +348,9 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             }
             const { html: processedHtml, docIds: pastedDocIds } = await this._processBase64ImagesRegex(processedBody);
             processedBody = processedHtml;
-            const allDocIds = this.postAttachments.map(a => a.documentId);
+            // インライン画像＋クリップ添付を capabilities.files に含めフィード表示を有効化
+            const attachmentDocIds = this.postAttachments.map(a => a.documentId);
+            const allDocIds = [...new Set([...inlineDocIds, ...(pastedDocIds || []), ...attachmentDocIds])];
 
             // デバッグ: 画像が送信 body に含まれているか確認（画像がフィードに残らない原因調査用）
             console.debug('[chatterLwc] 送信 body:', processedBody);

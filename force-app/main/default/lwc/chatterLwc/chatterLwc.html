@@ -15,12 +15,20 @@
                         
                         <div class="rich-text-wrapper post-rich-text-wrapper">
                             <div class="editor-container">
+                                <input type="file" class="hidden-file-input" accept="image/*" data-id="post-image-input" onchange={handleImageFileSelected}>
                                 <lightning-input-rich-text 
                                     data-id="post-editor" 
                                     value={body} 
                                     onchange={handleBodyChange} 
                                     placeholder="最新情報を共有... 画像はCtrl+Vで貼り付けも可能"
                                     formats={formats}>
+                                    <lightning-rich-text-toolbar-button-group slot="toolbar" aria-label="画像挿入">
+                                        <lightning-rich-text-toolbar-button
+                                            icon-name="utility:image"
+                                            icon-alternative-text="画像をインライン挿入（Ctrl+Vも可）"
+                                            onclick={handleInsertImageClick}>
+                                        </lightning-rich-text-toolbar-button>
+                                    </lightning-rich-text-toolbar-button-group>
                                 </lightning-input-rich-text>
                             </div>
                         </div>
@@ -30,13 +38,6 @@
                             <div class="common-form-control">
                                 <input type="file" class="hidden-file-input post-file-input-hidden" multiple onchange={handlePostFileSelected}>
                                 <lightning-button-icon icon-name="utility:attach" title="ファイルを添付" onclick={handlePostAttachClick}></lightning-button-icon>
-                            </div>
-                        </div>
-                        <div class="common-form-row">
-                            <div class="common-form-label">画像挿入</div>
-                            <div class="common-form-control">
-                                <input type="file" class="hidden-file-input" accept="image/*" data-id="post-image-input" onchange={handleImageFileSelected}>
-                                <lightning-button-icon icon-name="utility:image" variant="bare" title="画像をインライン挿入（Ctrl+Vも可）" onclick={handleInsertImageClick}></lightning-button-icon>
                             </div>
                         </div>
                         <template lwc:if={hasPostAttachments}>
