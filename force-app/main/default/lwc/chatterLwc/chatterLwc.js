@@ -17,6 +17,13 @@ import searchRecipients from '@salesforce/apex/CustomChatterController.searchRec
 
 const VISIBILITY_ALL_USERS = 'AllUsers';
 const VISIBILITY_INTERNAL = 'InternalUsers';
+/**
+ * デバッグ用：キャッシュ確認。connectedCallbackでログ出力され、
+ * 「v2-error-handling-url-fix」が表示されれば修正版が読み込まれている。
+ * キャッシュが残る場合：Ctrl+Shift+R（強制再読込）、または
+ * ブラウザ開発者ツール→ネットワーク→「キャッシュを無効化」をオンにして再読込。
+ */
+const LWC_VERSION = 'v3-inline-image-069';
 const ACCEPTED_FILE_EXTENSIONS = '.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv';
 
 export default class ChatterLwc extends NavigationMixin(LightningElement) {
@@ -73,8 +80,9 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         return `draft_${this.recordId}_${this.currentUserId}`;
     }
 
-    // 追加: 初期化時に下書きを復元
+    // 初期化時に下書きを復元。キャッシュ確認用にバージョンをログ出力。
     connectedCallback() {
+        console.info('[chatterLwc] バージョン:', LWC_VERSION, '（更新反映の確認用）');
         this.restoreDraft();
     }
 
@@ -83,13 +91,10 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         if (draft) {
             try {
                 const parsed = JSON.parse(draft);
-                // 投稿本文の復元
-                if (parsed.post) {
-                    this.body = parsed.post;
-                }
-                // メール本文の復元
-                if (parsed.email) {
-                    this.emailBody = parsed.email;
+                if (parsed.post) this.body = parsed.post;
+                if (parsed.email) this.emailBody = parsed.email;
+                if (parsed.uploadedImageMap && typeof parsed.uploadedImageMap === 'object') {
+                    this.uploadedImageMap = parsed.uploadedImageMap;
                 }
             } catch (e) {
                 console.error('Failed to parse draft', e);
@@ -97,11 +102,11 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         }
     }
 
-    // 追加: 下書き保存処理
     saveDraft() {
         const data = {
             post: this.body,
             email: this.emailBody,
+            uploadedImageMap: this.uploadedImageMap,
             timestamp: Date.now()
         };
         localStorage.setItem(this.storageKey, JSON.stringify(data));
@@ -217,7 +222,11 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             
             // 追加: 送信成功後は下書きをクリア（空の状態で保存）
             this.saveDraft();
-        } catch (error) { this._showToast('送信エラー', error.message, 'error'); }
+        } catch (error) {
+            const msg = this._getErrorMessage(error);
+            this._logError('メール送信エラー', error);
+            this._showToast('送信エラー', msg, 'error');
+        }
         finally { this.isLoading = false; }
     }
 
@@ -243,7 +252,11 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
                 this._updateRichTextHeight(this.body, '.post-rich-text-wrapper');
                 this.saveDraft(); // 画像挿入時も保存
             }
-        } catch (error) { this._showToast('画像挿入エラー', error.message, 'error'); }
+        } catch (error) {
+            const msg = this._getErrorMessage(error);
+            this._logError('画像挿入エラー', error);
+            this._showToast('画像挿入エラー', msg, 'error');
+        }
     }
 
     async handleShare() {
@@ -252,23 +265,58 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             let processedBody = this.body || '';
             const inlineDocIds = [];
             for (const [url, info] of Object.entries(this.uploadedImageMap)) {
+                const documentId = info.documentId;
+                const versionId = info.versionId;
+                // ConnectApi InlineImageSegmentInput は ContentDocumentId (069) を要求する
+                // 1. 完全一致（相対URLなど）
                 if (processedBody.includes(url)) {
-                    inlineDocIds.push(info.documentId);
-                    processedBody = processedBody.split(url).join(`sfdc://${info.versionId}`);
+                    inlineDocIds.push(documentId);
+                    processedBody = processedBody.split(url).join(`sfdc://${documentId}`);
+                    continue;
+                }
+                // 2. HTMLエンコード版（&→&amp; 等）を試行
+                const encodedUrl = url.replace(/&/g, '&amp;');
+                if (processedBody.includes(encodedUrl)) {
+                    inlineDocIds.push(documentId);
+                    processedBody = processedBody.split(encodedUrl).join(`sfdc://${documentId}`);
+                    continue;
+                }
+                // 3. 絶対URLや正規化差分を吸収：img src 内の /version/download/068xx を置換（069で送信）
+                const srcRegex = new RegExp(
+                    `(src=["'])([^"']*?/version/download/${this._escapeRegex(versionId)}[^"']*?)(["'])`,
+                    'gi'
+                );
+                const afterReplace = processedBody.replace(srcRegex, `$1sfdc://${documentId}$3`);
+                if (afterReplace !== processedBody) {
+                    inlineDocIds.push(documentId);
+                    processedBody = afterReplace;
                 }
             }
             const { html: processedHtml, docIds: pastedDocIds } = await this._processBase64ImagesRegex(processedBody);
             processedBody = processedHtml;
-            const allDocIds = [...new Set([...inlineDocIds, ...pastedDocIds, ...this.postAttachments.map(a => a.documentId)])];
-            await postFeedItem({ parentId: this.recordId, body: processedBody, visibility: this.visibility, contentDocumentIds: allDocIds });
+            const allDocIds = this.postAttachments.map(a => a.documentId);
+
+            // Apex呼び出し
+            await postFeedItem({ 
+                parentId: this.recordId, 
+                body: processedBody, 
+                visibility: this.visibility, 
+                contentDocumentIds: allDocIds 
+            });
+            
             if (this.recordId) await notifyRecordUpdateAvailable([{ recordId: this.recordId }]);
             this._showToast('成功', '投稿しました', 'success');
             
             // 投稿成功時にクリア＆下書き削除
             this._clearFields();
             this.saveDraft();
-        } catch (error) { this._showToast('投稿エラー', error.message, 'error'); }
-        finally { this.isLoading = false; }
+        } catch (error) {
+            const msg = this._getErrorMessage(error);
+            this._logError('投稿エラー', error);
+            this._showToast('投稿エラー', msg, 'error');
+        } finally { 
+            this.isLoading = false; 
+        }
     }
 
     async _processBase64ImagesRegex(html) {
@@ -281,7 +329,7 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             const ext = (match[1].match(/data:image\/(\w+);/)?.[1] || 'png').replace('jpeg', 'jpg');
             try {
                 const res = await uploadFileForPost({ base64Data: b64Data, fileName: `pasted_${Date.now()}.${ext}`, recordId: this.recordId, visibility: this.visibility });
-                newHtml = newHtml.split(match[1]).join(`sfdc://${res.versionId}`);
+                newHtml = newHtml.split(match[1]).join(`sfdc://${res.documentId}`);
                 docIds.push(res.documentId);
             } catch (e) { console.error('Base64 upload error', e); }
         }
@@ -290,6 +338,7 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
 
     _fileToBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
     _decodeHtml(html) { const txt = document.createElement("textarea"); txt.innerHTML = html; return txt.value; }
+    _escapeRegex(str) { return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
     _showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }
     _clearFields() {
         this.body = '';
@@ -361,4 +410,30 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         }
     }
     handleRemoveEmailAttachment(e) { this.emailAttachments = this.emailAttachments.filter(a => a.documentId !== e.currentTarget.dataset.documentId); }
+
+    /**
+     * Apex/Salesforceエラーからメッセージを安全に抽出。
+     * Locker ServiceのProxy対応のため、optional chainingでアクセス。
+     */
+    _getErrorMessage(error) {
+        try {
+            if (error?.body?.message) return String(error.body.message);
+            if (error?.message) return String(error.message);
+            if (typeof error === 'string') return error;
+        } catch (e) { /* Proxy等でアクセス失敗時 */ }
+        return '不明なシステムエラーが発生しました。';
+    }
+
+    /**
+     * エラーをコンソールに安全に出力。JSON.stringify/Proxyでクラッシュしないよう防御。
+     */
+    _logError(label, error) {
+        try {
+            const msg = this._getErrorMessage(error);
+            console.error(`[chatterLwc] ${label}:`, msg);
+            if (error?.body) console.error('[chatterLwc] error.body:', error.body);
+        } catch (e) {
+            console.error(`[chatterLwc] ${label}: (詳細の出力に失敗)`);
+        }
+    }
 }

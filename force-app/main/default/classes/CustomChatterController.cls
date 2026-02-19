@@ -106,10 +106,12 @@ public with sharing class CustomChatterController {
 
             String srcValue = matcher.group(1);
             String fileId = extractFileIdFromSrc(srcValue);
+            
+            System.debug('Extracted File ID (ContentDocument 069): ' + fileId);
 
             if (String.isNotBlank(fileId)) {
                 ConnectApi.InlineImageSegmentInput imgSeg = new ConnectApi.InlineImageSegmentInput();
-                imgSeg.fileId = fileId; // ここに ContentVersionId (068) が入る
+                imgSeg.fileId = fileId; // ContentDocumentId (069)
                 bodyInput.messageSegments.add(imgSeg);
             }
             lastEnd = matcher.end();
@@ -129,25 +131,34 @@ public with sharing class CustomChatterController {
     }
 
     /**
-     * 画像URL（src）から Salesforce のファイル ID (068: ContentVersion) を抽出・解決する。
-     * servlet/rtaImage?refid=0EM... 形式のURLは、ContentAsset → ContentDocument → ContentVersion を経由して解決する。
+     * 画像URL（src）から InlineImageSegmentInput 用のファイル ID を抽出する。
+     * ConnectApi.InlineImageSegmentInput.fileId は ContentDocumentId (069) を要求する（ConnectApiHelper準拠）。
      */
     private static String extractFileIdFromSrc(String src) {
         if (String.isBlank(src)) return null;
 
-        // 1. sfdc:// プロトコル (LWC側で置換済みの場合)
+        // 1. sfdc:// プロトコル (LWC側で置換済み) → そのまま返す。LWCは069を送る。
         if (src.startsWith('sfdc://')) return src.substring(7);
-        
-        // 2. 標準のファイルID (068: ContentVersion / 069: ContentDocument) を抽出
-        Pattern idPattern = Pattern.compile('(?i)(0(69|68)[a-zA-Z0-9]{12,15})');
-        Matcher m = idPattern.matcher(src);
+
+        // 2. 069 (ContentDocument) を優先。InlineImageSegmentInput はこれを受け付ける。
+        Pattern cdPattern = Pattern.compile('(?i)(069[a-zA-Z0-9]{12,15})');
+        Matcher m = cdPattern.matcher(src);
         if (m.find()) return m.group(1);
 
-        // 3. servlet/rtaImage 等の refid=0EM... から ContentVersion ID (068) を解決
+        // 3. 068 (ContentVersion) の場合は ContentDocumentId に変換。/version/download/068xx 等
+        Pattern cvPattern = Pattern.compile('(?i)(068[a-zA-Z0-9]{12,15})');
+        m = cvPattern.matcher(src);
+        if (m.find()) {
+            Id versionId = (Id)m.group(1);
+            List<ContentVersion> cvs = [SELECT ContentDocumentId FROM ContentVersion WHERE Id = :versionId LIMIT 1];
+            return cvs.isEmpty() ? null : (String)cvs[0].ContentDocumentId;
+        }
+
+        // 4. servlet/rtaImage 等の refid=0EM... → ContentDocumentId (069) を解決
         if (src.contains('refid=')) {
             String assetId = extractRefIdFromUrl(src);
             if (String.isNotBlank(assetId)) {
-                return resolveContentVersionIdFromAssetId(assetId);
+                return resolveContentDocumentIdFromAssetId(assetId);
             }
         }
         
@@ -161,18 +172,15 @@ public with sharing class CustomChatterController {
         return m.find() ? m.group(1) : null;
     }
 
-    /** ContentAsset ID (0EM) から ContentDocumentId を取得し、最新 ContentVersion ID (068) を返す */
-    private static String resolveContentVersionIdFromAssetId(String assetId) {
+    /** ContentAsset ID (0EM) から ContentDocumentId (069) を取得 */
+    private static String resolveContentDocumentIdFromAssetId(String assetId) {
         List<ContentAsset> assets;
         try {
             assets = [SELECT ContentDocumentId FROM ContentAsset WHERE Id = :assetId LIMIT 1];
         } catch (Exception e) {
             return null;
         }
-        if (assets.isEmpty() || assets[0].ContentDocumentId == null) return null;
-
-        List<ContentVersion> cvs = [SELECT Id FROM ContentVersion WHERE ContentDocumentId = :assets[0].ContentDocumentId AND IsLatest = true LIMIT 1];
-        return cvs.isEmpty() ? null : cvs[0].Id;
+        return (assets.isEmpty() || assets[0].ContentDocumentId == null) ? null : (String)assets[0].ContentDocumentId;
     }
 
     private static void addTextSegment(ConnectApi.MessageBodyInput bodyInput, String htmlChunk) {
