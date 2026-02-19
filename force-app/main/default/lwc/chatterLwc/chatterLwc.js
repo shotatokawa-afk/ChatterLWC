@@ -23,7 +23,7 @@ const VISIBILITY_INTERNAL = 'InternalUsers';
  * キャッシュが残る場合：Ctrl+Shift+R（強制再読込）、または
  * ブラウザ開発者ツール→ネットワーク→「キャッシュを無効化」をオンにして再読込。
  */
-const LWC_VERSION = 'v3-inline-image-069';
+const LWC_VERSION = 'v5-ctrl-v-paste';
 const ACCEPTED_FILE_EXTENSIONS = '.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv';
 
 export default class ChatterLwc extends NavigationMixin(LightningElement) {
@@ -66,11 +66,11 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         { label: '株式会社パトスロゴスのみ', value: VISIBILITY_INTERNAL }
     ];
 
-    // 'image'を含めることでQuillのCtrl+V画像ペーストを有効化。ツールバーの標準ボタンはURL入力のみ
+    // リンクボタンのみ非表示（枠外ポップオーバー回避）。画像はCtrl+Vペースト対応のため残す
     get formats() {
         return [
             'font', 'size', 'bold', 'italic', 'underline', 'strike',
-            'list', 'indent', 'align', 'link', 'image',
+            'list', 'indent', 'align', 'image',
             'clean', 'table', 'header', 'color', 'background'
         ];
     }
@@ -80,10 +80,24 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
         return `draft_${this.recordId}_${this.currentUserId}`;
     }
 
-    // 初期化時に下書きを復元。キャッシュ確認用にバージョンをログ出力。
     connectedCallback() {
         console.info('[chatterLwc] バージョン:', LWC_VERSION, '（更新反映の確認用）');
         this.restoreDraft();
+        if (this._pasteListenerAdded) return;
+        this._pasteListenerAdded = true;
+        this._boundHandlePaste = this.handlePaste.bind(this);
+        setTimeout(() => {
+            const container = this.template.querySelector('.editor-container');
+            if (container) container.addEventListener('paste', this._boundHandlePaste, true);
+        }, 0);
+    }
+
+    disconnectedCallback() {
+        const container = this.template.querySelector('.editor-container');
+        if (container && this._boundHandlePaste) {
+            container.removeEventListener('paste', this._boundHandlePaste, true);
+        }
+        this._pasteListenerAdded = false;
     }
 
     restoreDraft() {
@@ -232,14 +246,42 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
 
     handleInsertImageClick() { this.template.querySelector('input[data-id="post-image-input"]')?.click(); }
 
+    async handlePaste(event) {
+        const items = event?.clipboardData?.items;
+        if (!items) return;
+        let imageFile = null;
+        for (const item of items) {
+            if (item.type?.startsWith('image/')) {
+                imageFile = item.getAsFile();
+                break;
+            }
+        }
+        if (!imageFile) return; // テキストなど画像以外はデフォルトのペーストに任せる
+        event.preventDefault();
+        event.stopImmediatePropagation(); // エディタのネイティブ処理を抑止し、rtaImage 生成を防ぐ
+        const ext = (imageFile.type || 'image/png').split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+        const fileName = (imageFile.name && imageFile.name.trim()) ? imageFile.name : `pasted_${Date.now()}.${ext}`;
+        await this._insertImageFromFile(new File([imageFile], fileName, { type: imageFile.type }));
+    }
+
     async handleImageFileSelected(event) {
         const file = event.target?.files?.[0];
         if (!file) return;
-        await this._insertImageFromFile(file);
-        event.target.value = '';
+        try {
+            await this._insertImageFromFile(file);
+        } catch (e) {
+            this._logError('画像挿入エラー', e);
+            this._showToast('画像挿入エラー', this._getErrorMessage(e), 'error');
+        } finally {
+            if (event?.target) event.target.value = '';
+        }
     }
 
     async _insertImageFromFile(file) {
+        if (!this.recordId) {
+            this._showToast('画像挿入エラー', 'レコードページでご利用ください。', 'error');
+            return;
+        }
         try {
             const b64 = await this._fileToBase64(file);
             const result = await uploadFileForPost({ base64Data: b64, fileName: file.name, recordId: this.recordId, visibility: this.visibility });
@@ -250,12 +292,16 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
                 this.body = (this.body || '') + imgTag;
                 editor.value = this.body;
                 this._updateRichTextHeight(this.body, '.post-rich-text-wrapper');
-                this.saveDraft(); // 画像挿入時も保存
+                this.saveDraft();
             }
         } catch (error) {
-            const msg = this._getErrorMessage(error);
-            this._logError('画像挿入エラー', error);
-            this._showToast('画像挿入エラー', msg, 'error');
+            try {
+                const msg = this._getErrorMessage(error);
+                this._logError('画像挿入エラー', error);
+                this._showToast('画像挿入エラー', msg, 'error');
+            } catch (inner) {
+                console.error('[chatterLwc] 画像挿入エラー（ハンドラ内で失敗）:', inner);
+            }
         }
     }
 
@@ -295,6 +341,11 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
             const { html: processedHtml, docIds: pastedDocIds } = await this._processBase64ImagesRegex(processedBody);
             processedBody = processedHtml;
             const allDocIds = this.postAttachments.map(a => a.documentId);
+
+            // デバッグ: 画像が送信 body に含まれているか確認（画像がフィードに残らない原因調査用）
+            console.debug('[chatterLwc] 送信 body:', processedBody);
+            console.debug('[chatterLwc] uploadedImageMap 件数:', Object.keys(this.uploadedImageMap).length);
+            console.debug('[chatterLwc] body に img/sfdc 含む:', processedBody.includes('<img') || processedBody.includes('sfdc://'));
 
             // Apex呼び出し
             await postFeedItem({ 
@@ -339,7 +390,14 @@ export default class ChatterLwc extends NavigationMixin(LightningElement) {
     _fileToBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
     _decodeHtml(html) { const txt = document.createElement("textarea"); txt.innerHTML = html; return txt.value; }
     _escapeRegex(str) { return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-    _showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }
+    _showToast(title, message, variant) {
+        const safeMsg = (message != null && String(message).trim()) ? String(message) : 'エラーが発生しました。';
+        try {
+            this.dispatchEvent(new ShowToastEvent({ title, message: safeMsg, variant }));
+        } catch (e) {
+            console.error('[chatterLwc] ShowToastEvent の発火に失敗:', e);
+        }
+    }
     _clearFields() {
         this.body = '';
         this.postAttachments = [];
