@@ -201,7 +201,7 @@ export default class PostLwc extends LightningElement {
             const attachmentDocIds = this.postAttachments.map(a => a.documentId);
             const allDocIds = [...new Set([...inlineDocIds, ...(pastedDocIds || []), ...attachmentDocIds])];
 
-            await postFeedItem({
+            const result = await postFeedItem({
                 parentId: this.recordId,
                 body: processedBody,
                 visibility: this.visibility,
@@ -209,7 +209,12 @@ export default class PostLwc extends LightningElement {
             });
 
             if (this.recordId) await notifyRecordUpdateAvailable([{ recordId: this.recordId }]);
-            this._showToast('成功', '投稿しました', 'success');
+
+            let successMessage = '投稿しました';
+            if (result && result.caseUpdated) {
+                successMessage += '。ステータスと所有者を更新しました。';
+            }
+            this._showToast('成功', successMessage, 'success');
 
             this._clearFields();
             this.saveDraft();
