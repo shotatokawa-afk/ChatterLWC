@@ -1,0 +1,143 @@
+:host {
+    --slds-c-textarea-sizing-min-height: 120px;
+    --sds-c-textarea-sizing-min-height: 120px;
+    --slds-c-textarea-sizing-max-height: none;
+    --sds-c-textarea-sizing-max-height: none;
+}
+
+.card-no-header header.slds-card__header {
+    display: none;
+}
+
+.email-card-scroll-area {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.common-form-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    width: 100%;
+}
+
+.common-form-row.align-top {
+    align-items: flex-start;
+}
+
+.common-form-row.align-top .common-form-label {
+    padding-top: 0.5rem;
+}
+
+.common-form-label {
+    width: 5rem;
+    flex-shrink: 0;
+    font-size: 0.8125rem;
+    color: var(--slds-g-color-neutral-base-30, #3e3e3c);
+    text-align: left;
+    font-weight: 400;
+    margin-right: 0.5rem;
+}
+
+.common-form-control {
+    flex-grow: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.control-width-limit {
+    max-width: 100%;
+    width: 100%;
+}
+
+.lookup-container {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+}
+
+.recipient-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.recipient-links {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
+}
+
+.recipient-link {
+    color: #0176d3;
+    font-size: 0.8125rem;
+    cursor: pointer;
+}
+
+.recipient-link:hover {
+    text-decoration: underline;
+}
+
+.recipient-link-icon {
+    color: var(--slds-g-color-neutral-base-50, #706e6b);
+}
+
+.lookup-input {
+    width: 100%;
+}
+
+.slds-dropdown_fluid {
+    min-width: 100%;
+}
+
+lightning-pill-container {
+    margin-bottom: 0.25rem;
+}
+
+.email-tab-content {
+    padding-top: var(--slds-spacing-small, 0.75rem);
+}
+
+.rich-text-wrapper {
+    --slds-c-textarea-sizing-max-height: none;
+    --sds-c-textarea-sizing-max-height: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
+    width: 100%;
+    margin-bottom: 0.75rem;
+}
+
+.hidden-file-input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.post-action-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 0.5rem;
+}
+
+.email-attach-section {
+    background-color: var(--slds-g-color-neutral-base-98, #fafaf9);
+    margin-top: 0.5rem;
+    border-radius: 0.25rem;
+    margin-left: 5.5rem;
+}
+
+.original-message {
+    border: 1px solid var(--slds-g-color-border-base-1, #e5e5e5);
+    border-radius: 0.25rem;
+    background-color: var(--slds-g-color-neutral-base-95, #f3f3f3);
+    margin-left: 5.5rem;
+}
