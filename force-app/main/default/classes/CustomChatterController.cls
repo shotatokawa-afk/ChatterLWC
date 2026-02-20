@@ -31,7 +31,7 @@ public with sharing class CustomChatterController {
     //  投稿機能
     // ---------------------------------------------------------
     @AuraEnabled
-    public static void postFeedItem(Id parentId, String body, String visibility, List<Id> contentDocumentIds) {
+    public static Map<String, Object> postFeedItem(Id parentId, String body, String visibility, List<Id> contentDocumentIds) {
         if (parentId == null) throw new AuraHandledException('レコード ID は必須です。');
         if (String.isBlank(body)) throw new AuraHandledException('本文を入力してください。');
 
@@ -68,9 +68,14 @@ public with sharing class CustomChatterController {
                 }
             }
 
+            Boolean caseUpdated = false;
             if (parentId.getSObjectType() == Case.sObjectType) {
-                updateCaseStatusAndOwner(parentId);
+                caseUpdated = updateCaseStatusAndOwner(parentId);
             }
+
+            Map<String, Object> result = new Map<String, Object>();
+            result.put('caseUpdated', caseUpdated);
+            return result;
 
         } catch (Exception e) {
             throw new AuraHandledException(e.getMessage());
@@ -79,14 +84,16 @@ public with sharing class CustomChatterController {
 
     // --- ヘルパーメソッド ---
 
-    private static void updateCaseStatusAndOwner(Id caseId) {
+    private static Boolean updateCaseStatusAndOwner(Id caseId) {
         List<Case> cases = [SELECT Id, Status FROM Case WHERE Id = :caseId AND Status = '新規' LIMIT 1];
         if (!cases.isEmpty()) {
             Case c = cases[0];
             c.Status = '対応中'; 
             c.OwnerId = UserInfo.getUserId();
             update c;
+            return true;
         }
+        return false;
     }
 
     /** Connect API でサポートする Markup タグのマッピング（ConnectApiHelper準拠） */
