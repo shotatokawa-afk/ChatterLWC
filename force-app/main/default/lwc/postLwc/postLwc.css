@@ -1,0 +1,87 @@
+:host {
+    --slds-c-textarea-sizing-min-height: 120px;
+    --sds-c-textarea-sizing-min-height: 120px;
+    --slds-c-textarea-sizing-max-height: none;
+    --sds-c-textarea-sizing-max-height: none;
+}
+
+.card-no-header header.slds-card__header {
+    display: none;
+}
+
+.post-card-scroll-area {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.common-form-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    width: 100%;
+}
+
+.common-form-label {
+    width: 5rem;
+    flex-shrink: 0;
+    font-size: 0.8125rem;
+    color: var(--slds-g-color-neutral-base-30, #3e3e3c);
+    text-align: left;
+    font-weight: 400;
+    margin-right: 0.5rem;
+}
+
+.common-form-control {
+    flex-grow: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.control-width-limit {
+    max-width: 100%;
+    width: 100%;
+}
+
+.post-tab-content {
+    padding-top: var(--slds-spacing-small, 0.75rem);
+}
+
+.rich-text-wrapper {
+    --slds-c-textarea-sizing-max-height: none;
+    --sds-c-textarea-sizing-max-height: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
+    width: 100%;
+    margin-bottom: 0.75rem;
+}
+
+.hidden-file-input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.post-action-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 0.5rem;
+}
+
+.post-attach-section {
+    background-color: var(--slds-g-color-neutral-base-98, #fafaf9);
+    margin-top: 0.5rem;
+    border-radius: 0.25rem;
+    margin-left: 5.5rem;
+}
+
+.editor-container {
+    width: 100%;
+}

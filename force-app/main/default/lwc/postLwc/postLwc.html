@@ -1,0 +1,58 @@
+<template>
+    <div class="post-lwc-root">
+        <div class="post-tab-content">
+                    <div class="common-form-row">
+                        <div class="common-form-label">テンプレート</div>
+                        <div class="common-form-control">
+                            <lightning-combobox name="postTemplate" placeholder="テンプレートから挿入..." options={templateOptions} onchange={handlePostTemplateSelect} variant="label-hidden" class="control-width-limit"></lightning-combobox>
+                        </div>
+                    </div>
+
+                    <div class="rich-text-wrapper post-rich-text-wrapper">
+                        <div class="editor-container">
+                            <input type="file" class="hidden-file-input" accept="image/*" data-id="post-image-input" onchange={handleImageFileSelected}>
+                            <lightning-input-rich-text
+                                data-id="post-editor"
+                                value={body}
+                                onchange={handleBodyChange}
+                                placeholder="最新情報を共有... 画像はCtrl+Vで貼り付けも可能"
+                                formats={formats}>
+                                <lightning-rich-text-toolbar-button-group slot="toolbar" aria-label="画像挿入">
+                                    <lightning-rich-text-toolbar-button
+                                        icon-name="utility:image"
+                                        icon-alternative-text="画像をインライン挿入（Ctrl+Vも可）"
+                                        onclick={handleInsertImageClick}>
+                                    </lightning-rich-text-toolbar-button>
+                                </lightning-rich-text-toolbar-button-group>
+                            </lightning-input-rich-text>
+                        </div>
+                    </div>
+
+                    <div class="common-form-row">
+                        <div class="common-form-label">添付</div>
+                        <div class="common-form-control">
+                            <input type="file" class="hidden-file-input post-file-input-hidden" multiple onchange={handlePostFileSelected}>
+                            <lightning-button-icon icon-name="utility:attach" title="ファイルを添付" onclick={handlePostAttachClick}></lightning-button-icon>
+                        </div>
+                    </div>
+                    <template lwc:if={hasPostAttachments}>
+                        <div class="post-attach-section slds-p-around_small">
+                            <template for:each={postAttachments} for:item="att">
+                                <lightning-pill key={att.documentId} label={att.name} name={att.documentId} onremove={handleRemovePostAttachment} data-document-id={att.documentId}></lightning-pill>
+                            </template>
+                        </div>
+                    </template>
+
+                    <div class="common-form-row slds-m-top_small">
+                        <div class="common-form-label">宛先</div>
+                        <div class="common-form-control">
+                            <lightning-combobox name="visibility" value={visibility} options={visibilityOptions} onchange={handleVisibilityChange} variant="label-hidden" class="control-width-limit"></lightning-combobox>
+                        </div>
+                    </div>
+
+                    <div class="post-action-footer">
+                        <lightning-button label="共有" variant="brand" onclick={handleShare} disabled={isShareDisabled}></lightning-button>
+                    </div>
+        </div>
+    </div>
+</template>

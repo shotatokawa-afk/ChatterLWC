@@ -89,36 +89,36 @@ public with sharing class CustomChatterController {
         }
     }
 
+    /** Connect API でサポートする Markup タグのマッピング（ConnectApiHelper準拠） */
+    private static final Map<String, ConnectApi.MarkupType> SUPPORTED_MARKUP = new Map<String, ConnectApi.MarkupType>{
+        'b' => ConnectApi.MarkupType.Bold,
+        'i' => ConnectApi.MarkupType.Italic,
+        'u' => ConnectApi.MarkupType.Underline,
+        's' => ConnectApi.MarkupType.Strikethrough,
+        'ul' => ConnectApi.MarkupType.UnorderedList,
+        'ol' => ConnectApi.MarkupType.OrderedList,
+        'li' => ConnectApi.MarkupType.ListItem,
+        'p' => ConnectApi.MarkupType.Paragraph
+    };
+
     private static ConnectApi.MessageBodyInput convertHtmlToMessageBodyInput(String html) {
         ConnectApi.MessageBodyInput bodyInput = new ConnectApi.MessageBodyInput();
         bodyInput.messageSegments = new List<ConnectApi.MessageSegmentInput>();
 
         if (String.isBlank(html)) return bodyInput;
 
-        // imgタグ内のsrc属性を抽出する
-        Pattern imgTagPattern = Pattern.compile('(?i)<img[^>]+src=["\']([^"\']+)["\'][^>]*>');
-        Matcher matcher = imgTagPattern.matcher(html);
+        // 1. HTML正規化（lightning-input-rich-text の出力を Connect API 形式に）
+        String normalized = normalizeHtmlForChatter(html);
 
-        Integer lastEnd = 0;
-        while (matcher.find()) {
-            String textPart = html.substring(lastEnd, matcher.start());
-            addTextSegment(bodyInput, textPart);
+        // 2. 画像を {img:069xxx} プレースホルダーに変換
+        normalized = preprocessImgTags(normalized);
 
-            String srcValue = matcher.group(1);
-            String fileId = extractFileIdFromSrc(srcValue);
-            
-            System.debug('Extracted File ID (ContentDocument 069): ' + fileId);
+        // 3. リンクをプレースホルダーに変換（リンクテキスト{link:url}）
+        normalized = preprocessLinkTags(normalized);
 
-            if (String.isNotBlank(fileId)) {
-                ConnectApi.InlineImageSegmentInput imgSeg = new ConnectApi.InlineImageSegmentInput();
-                imgSeg.fileId = fileId; // ContentDocumentId (069)
-                bodyInput.messageSegments.add(imgSeg);
-            }
-            lastEnd = matcher.end();
-        }
-
-        String remaining = html.substring(lastEnd);
-        addTextSegment(bodyInput, remaining);
+        // 4. Markup タグをパースして MessageSegment リストを構築
+        List<ConnectApi.MessageSegmentInput> segments = parseHtmlToMessageSegments(normalized);
+        bodyInput.messageSegments = segments;
 
         // セグメントが空の場合の補完
         if (bodyInput.messageSegments.isEmpty()) {
@@ -128,6 +128,116 @@ public with sharing class CustomChatterController {
         }
 
         return bodyInput;
+    }
+
+    /** strong/em/strike を b/i/s に正規化（lightning-input-rich-text の Quill 出力に対応） */
+    private static String normalizeHtmlForChatter(String html) {
+        if (String.isBlank(html)) return html;
+        String s = html;
+        s = s.replaceAll('(?i)<strong\\s[^>]*>', '<b>').replaceAll('(?i)<strong>', '<b>');
+        s = s.replaceAll('(?i)</strong>', '</b>');
+        s = s.replaceAll('(?i)<em\\s[^>]*>', '<i>').replaceAll('(?i)<em>', '<i>');
+        s = s.replaceAll('(?i)</em>', '</i>');
+        s = s.replaceAll('(?i)<strike\\s[^>]*>', '<s>').replaceAll('(?i)<strike>', '<s>');
+        s = s.replaceAll('(?i)</strike>', '</s>');
+        return s;
+    }
+
+    /** img タグを {img:069xxx} に置換（Apex では StringBuffer 非対応のため手動で構築） */
+    private static String preprocessImgTags(String html) {
+        if (String.isBlank(html) || !html.containsIgnoreCase('<img')) return html;
+        Pattern p = Pattern.compile('(?i)<img[^>]+src=["\']([^"\']+)["\'][^>]*>');
+        Matcher m = p.matcher(html);
+        List<String> parts = new List<String>();
+        Integer lastEnd = 0;
+        while (m.find()) {
+            parts.add(html.substring(lastEnd, m.start()));
+            String fileId = extractFileIdFromSrc(m.group(1));
+            parts.add(String.isNotBlank(fileId) ? '{img:' + fileId + '}' : '');
+            lastEnd = m.end();
+        }
+        parts.add(html.substring(lastEnd));
+        return String.join(parts, '');
+    }
+
+    /** a タグを リンクテキスト{link:url} 形式に変換（Apex では StringBuffer 非対応のため手動で構築） */
+    private static String preprocessLinkTags(String html) {
+        if (String.isBlank(html) || !html.containsIgnoreCase('<a ')) return html;
+        Pattern p = Pattern.compile('(?i)<a\\s+href=["\']([^"\']+)["\'][^>]*>([\\s\\S]*?)</a>');
+        Matcher m = p.matcher(html);
+        List<String> parts = new List<String>();
+        Integer lastEnd = 0;
+        while (m.find()) {
+            parts.add(html.substring(lastEnd, m.start()));
+            String url = m.group(1);
+            String innerHtml = m.group(2);
+            String linkText = htmlToPlainText(innerHtml);
+            parts.add((String.isNotEmpty(linkText) ? linkText : url) + '{link:' + url + '}');
+            lastEnd = m.end();
+        }
+        parts.add(html.substring(lastEnd));
+        return String.join(parts, '');
+    }
+
+    /** HTML をパースして MessageSegment のリストを構築（ConnectApiHelper 方式） */
+    private static List<ConnectApi.MessageSegmentInput> parseHtmlToMessageSegments(String html) {
+        List<ConnectApi.MessageSegmentInput> segments = new List<ConnectApi.MessageSegmentInput>();
+        if (String.isBlank(html)) return segments;
+
+        // パターン: 開始タグ | 終了タグ | 画像プレースホルダー
+        Pattern pattern = Pattern.compile(
+            '(<(b|i|u|s|ul|ol|li|p)(?:\\s[^>]*)?>)|' +
+            '(</(b|i|u|s|ul|ol|li|p)\\s*>)|' +
+            '(\\{img:(069[a-zA-Z0-9]{12,15})\\})|' +
+            '(\\{link:([^}]+)\\})'
+        );
+        Matcher m = pattern.matcher(html);
+        Integer lastEnd = 0;
+
+        while (m.find()) {
+            String textChunk = html.substring(lastEnd, m.start());
+            addMarkupAwareTextSegments(segments, textChunk);
+
+            if (m.group(2) != null) {
+                String tag = m.group(2).toLowerCase();
+                if (SUPPORTED_MARKUP.containsKey(tag)) {
+                    ConnectApi.MarkupBeginSegmentInput beg = new ConnectApi.MarkupBeginSegmentInput();
+                    beg.markupType = SUPPORTED_MARKUP.get(tag);
+                    segments.add(beg);
+                }
+            } else if (m.group(4) != null) {
+                String tag = m.group(4).toLowerCase();
+                if (SUPPORTED_MARKUP.containsKey(tag)) {
+                    ConnectApi.MarkupEndSegmentInput endSeg = new ConnectApi.MarkupEndSegmentInput();
+                    endSeg.markupType = SUPPORTED_MARKUP.get(tag);
+                    segments.add(endSeg);
+                }
+            } else if (m.group(6) != null) {
+                ConnectApi.InlineImageSegmentInput imgSeg = new ConnectApi.InlineImageSegmentInput();
+                imgSeg.fileId = m.group(6);
+                segments.add(imgSeg);
+            } else if (m.group(8) != null) {
+                ConnectApi.LinkSegmentInput linkSeg = new ConnectApi.LinkSegmentInput();
+                linkSeg.url = m.group(8);
+                segments.add(linkSeg);
+            }
+            lastEnd = m.end();
+        }
+
+        String trailing = html.substring(lastEnd);
+        addMarkupAwareTextSegments(segments, trailing);
+
+        return segments;
+    }
+
+    /** テキストチャンクを追加（未対応タグはプレーンテキストに変換） */
+    private static void addMarkupAwareTextSegments(List<ConnectApi.MessageSegmentInput> segments, String htmlChunk) {
+        String plain = htmlToPlainText(htmlChunk);
+        if (String.isNotEmpty(plain)) {
+            ConnectApi.TextSegmentInput ts = new ConnectApi.TextSegmentInput();
+            ts.text = plain;
+            segments.add(ts);
+        }
     }
 
     /**
@@ -199,15 +309,6 @@ public with sharing class CustomChatterController {
         }
         String result = (assets.isEmpty() || assets[0].ContentDocumentId == null) ? null : (String)assets[0].ContentDocumentId;
         return result;
-    }
-
-    private static void addTextSegment(ConnectApi.MessageBodyInput bodyInput, String htmlChunk) {
-        String plain = htmlToPlainText(htmlChunk);
-        if (String.isNotEmpty(plain)) {
-            ConnectApi.TextSegmentInput textSeg = new ConnectApi.TextSegmentInput();
-            textSeg.text = plain;
-            bodyInput.messageSegments.add(textSeg);
-        }
     }
 
     private static String htmlToPlainText(String html) {
